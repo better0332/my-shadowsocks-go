@@ -5,7 +5,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	ss "github.com/shadowsocks/shadowsocks-go/shadowsocks"
 	"io"
 	"log"
 	"net"
@@ -14,7 +13,10 @@ import (
 	"runtime"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"syscall"
+
+	ss "github.com/shadowsocks/shadowsocks-go/shadowsocks"
 )
 
 var debug ss.DebugLog
@@ -90,19 +92,14 @@ func getRequest(conn *ss.Conn) (host string, extra []byte, err error) {
 
 const logCntDelta = 100
 
-var connCnt int
-var nextLogConnCnt int = logCntDelta
+var connCnt uint64 // operate by sync/atomic
 
 func handleConnection(conn *ss.Conn) {
 	var host string
 
-	connCnt++ // this maybe not accurate, but should be enough
-	if connCnt-nextLogConnCnt >= 0 {
-		// XXX There's no xadd in the atomic package, so it's difficult to log
-		// the message only once with low cost. Also note nextLogConnCnt maybe
-		// added twice for current peak connection number level.
-		log.Printf("Number of client connections reaches %d\n", nextLogConnCnt)
-		nextLogConnCnt += logCntDelta
+	newConnCnt := atomic.AddUint64(&connCnt, 1) // connCnt++
+	if newConnCnt%logCntDelta == 0 {
+		log.Printf("Number of client connections reaches %d\n", newConnCnt)
 	}
 
 	// function arguments are always evaluated, so surround debug statement
@@ -115,7 +112,7 @@ func handleConnection(conn *ss.Conn) {
 		if debug {
 			debug.Printf("closed pipe %s<->%s\n", conn.RemoteAddr(), host)
 		}
-		connCnt--
+		atomic.AddUint64(&connCnt, ^uint64(0)) // connCnt--
 		if !closed {
 			conn.Close()
 		}

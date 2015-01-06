@@ -3,6 +3,7 @@ package shadowsocks
 import (
 	// "io"
 	"net"
+	"sync"
 	"time"
 )
 
@@ -17,16 +18,15 @@ func SetReadTimeout(c net.Conn) {
 	}
 }
 
-const bufSize = 4096
-const nBuf = 2048
-
-var pipeBuf = NewLeakyBuf(nBuf, bufSize)
+var pool = &sync.Pool{New: func() interface{} {
+	return make([]byte, 4096)
+}}
 
 // PipeThenClose copies data from src to dst, closes dst when done.
 func PipeThenClose(src, dst net.Conn, timeoutOpt int) {
 	defer dst.Close()
-	buf := pipeBuf.Get()
-	defer pipeBuf.Put(buf)
+	buf := pool.Get().([]byte)
+	defer pool.Put(buf)
 	for {
 		if timeoutOpt == SET_TIMEOUT {
 			SetReadTimeout(src)

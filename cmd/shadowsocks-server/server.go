@@ -224,6 +224,7 @@ func updatePasswd() {
 	config = newconfig
 
 	if err = unifyPortPassword(config); err != nil {
+		config = oldconfig
 		return
 	}
 	for port, passwd := range config.PortPassword {
@@ -320,7 +321,7 @@ func main() {
 	flag.IntVar(&cmdConfig.ServerPort, "p", 0, "server port")
 	flag.IntVar(&cmdConfig.Timeout, "t", 60, "connection timeout (in seconds)")
 	flag.StringVar(&cmdConfig.Method, "m", "", "encryption method, default: aes-256-cfb")
-	flag.IntVar(&core, "core", 0, "maximum number of CPU cores to use, default is determinied by Go runtime")
+	flag.IntVar(&core, "core", 0, "maximum number of CPU cores to use, default is determinied by logical CPUs on server")
 	flag.BoolVar((*bool)(&debug), "d", false, "print debug message")
 
 	flag.Parse()
@@ -354,7 +355,7 @@ func main() {
 		os.Exit(1)
 	}
 	if core > 0 {
-		runtime.GOMAXPROCS(core)
+		runtime.GOMAXPROCS(runtime.NumCPU())
 	}
 	for port, password := range config.PortPassword {
 		go run(port, password)

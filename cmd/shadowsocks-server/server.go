@@ -19,8 +19,6 @@ import (
 	ss "github.com/shadowsocks/shadowsocks-go/shadowsocks"
 )
 
-var debug ss.DebugLog
-
 const dnsGoroutineNum = 64
 
 func getRequest(conn *ss.Conn) (host string, extra []byte, err error) {
@@ -104,14 +102,10 @@ func handleConnection(conn *ss.Conn) {
 
 	// function arguments are always evaluated, so surround debug statement
 	// with if statement
-	if debug {
-		debug.Printf("new client %s->%s\n", conn.RemoteAddr().String(), conn.LocalAddr())
-	}
+	ss.Debug.Printf("new client %s->%s\n", conn.RemoteAddr().String(), conn.LocalAddr())
 	closed := false
 	defer func() {
-		if debug {
-			debug.Printf("closed pipe %s<->%s\n", conn.RemoteAddr(), host)
-		}
+		ss.Debug.Printf("closed pipe %s<->%s\n", conn.RemoteAddr(), host)
 		atomic.AddUint64(&connCnt, ^uint64(0)) // connCnt--
 		if !closed {
 			conn.Close()
@@ -123,7 +117,7 @@ func handleConnection(conn *ss.Conn) {
 		log.Println("error getting request", conn.RemoteAddr(), conn.LocalAddr(), err)
 		return
 	}
-	debug.Println("connecting", host)
+	ss.Debug.Println("connecting", host)
 	remote, err := net.Dial("tcp", host)
 	if err != nil {
 		if ne, ok := err.(*net.OpError); ok && (ne.Err == syscall.EMFILE || ne.Err == syscall.ENFILE) {
@@ -142,15 +136,13 @@ func handleConnection(conn *ss.Conn) {
 	}()
 	// write extra bytes read from
 	if extra != nil {
-		// debug.Println("getRequest read extra data, writing to remote, len", len(extra))
+		// Debug.Println("getRequest read extra data, writing to remote, len", len(extra))
 		if _, err = remote.Write(extra); err != nil {
-			debug.Println("write request extra error:", err)
+			ss.Debug.Println("write request extra error:", err)
 			return
 		}
 	}
-	if debug {
-		debug.Printf("piping %s<->%s", conn.RemoteAddr(), host)
-	}
+	ss.Debug.Printf("piping %s<->%s", conn.RemoteAddr(), host)
 	go ss.PipeThenClose(conn, remote, ss.SET_TIMEOUT)
 	ss.PipeThenClose(remote, conn, ss.NO_TIMEOUT)
 	closed = true
@@ -233,10 +225,11 @@ func updatePasswd() {
 			delete(oldconfig.PortPassword, port)
 		}
 	}
-	// port password still left in the old config should be closed
+	// port password still left in the old config should be closed, delete Traffic
 	for port, _ := range oldconfig.PortPassword {
 		log.Printf("closing port %s as it's deleted\n", port)
 		passwdManager.del(port)
+		ss.Traffic.DelTraffic(port)
 	}
 	log.Println("password updated")
 }
@@ -268,7 +261,7 @@ func run(port, password string) {
 		conn, err := ln.Accept()
 		if err != nil {
 			// listener maybe closed to update password
-			debug.Printf("accept error: %v\n", err)
+			ss.Debug.Printf("accept error: %v\n", err)
 			return
 		}
 		// Creating cipher upon first connection.
@@ -312,7 +305,7 @@ func main() {
 	log.SetOutput(os.Stdout)
 
 	var cmdConfig ss.Config
-	var printVer bool
+	var printVer, debug bool
 	var core int
 
 	flag.BoolVar(&printVer, "version", false, "print version")
@@ -322,7 +315,7 @@ func main() {
 	flag.IntVar(&cmdConfig.Timeout, "t", 60, "connection timeout (in seconds)")
 	flag.StringVar(&cmdConfig.Method, "m", "", "encryption method, default: aes-256-cfb")
 	flag.IntVar(&core, "core", 0, "maximum number of CPU cores to use, default is determinied by logical CPUs on server")
-	flag.BoolVar((*bool)(&debug), "d", false, "print debug message")
+	flag.BoolVar(&debug, "d", false, "print debug message")
 
 	flag.Parse()
 
@@ -331,6 +324,7 @@ func main() {
 		os.Exit(0)
 	}
 
+	ss.SetServer(true)
 	ss.SetDebug(debug)
 
 	var err error

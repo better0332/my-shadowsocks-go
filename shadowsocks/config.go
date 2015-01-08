@@ -88,8 +88,8 @@ func ParseConfig(path string) (config *Config, err error) {
 	return
 }
 
-func SetDebug(d DebugLog) {
-	Debug = d
+func SetDebug(d bool) {
+	Debug = DebugLog(d)
 }
 
 // Useful for command line to override options specified in config file

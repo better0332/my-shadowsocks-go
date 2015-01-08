@@ -6,8 +6,18 @@ import (
 	"os"
 )
 
+const version = "1.1.3"
+
+var IsServer bool
+
+func SetServer(b bool) {
+	IsServer = b
+	if IsServer {
+		newTraffic()
+	}
+}
+
 func PrintVersion() {
-	const version = "1.1.3"
 	fmt.Println("shadowsocks-go version", version)
 }
 

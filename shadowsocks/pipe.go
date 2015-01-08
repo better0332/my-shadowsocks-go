@@ -1,6 +1,7 @@
 package shadowsocks
 
 import (
+	"strconv"
 	// "io"
 	"net"
 	"sync"
@@ -12,15 +13,15 @@ const (
 	SET_TIMEOUT
 )
 
+var pool = &sync.Pool{New: func() interface{} {
+	return make([]byte, 4096)
+}}
+
 func SetReadTimeout(c net.Conn) {
 	if readTimeout != 0 {
 		c.SetReadDeadline(time.Now().Add(readTimeout))
 	}
 }
-
-var pool = &sync.Pool{New: func() interface{} {
-	return make([]byte, 4096)
-}}
 
 // PipeThenClose copies data from src to dst, closes dst when done.
 func PipeThenClose(src, dst net.Conn, timeoutOpt int) {
@@ -35,7 +36,11 @@ func PipeThenClose(src, dst net.Conn, timeoutOpt int) {
 		// read may return EOF with n > 0
 		// should always process n > 0 bytes before handling error
 		if n > 0 {
-			if _, err = dst.Write(buf[0:n]); err != nil {
+			_, err = dst.Write(buf[0:n])
+			if IsServer {
+				Traffic.upTraffic(strconv.Itoa(src.LocalAddr().(*net.TCPAddr).Port), n)
+			}
+			if err != nil {
 				Debug.Println("write:", err)
 				break
 			}
@@ -45,7 +50,7 @@ func PipeThenClose(src, dst net.Conn, timeoutOpt int) {
 			// identify this specific error. So just leave the error along for now.
 			// More info here: https://code.google.com/p/go/issues/detail?id=4373
 			/*
-				if bool(Debug) && err != io.EOF {
+				if err != io.EOF {
 					Debug.Println("read:", err)
 				}
 			*/

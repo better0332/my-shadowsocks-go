@@ -14,7 +14,7 @@ const (
 )
 
 var pool = &sync.Pool{New: func() interface{} {
-	return make([]byte, 4096)
+	return make([]byte, 32*1024)
 }}
 
 func SetReadTimeout(c net.Conn) {
@@ -36,7 +36,7 @@ func PipeThenClose(src, dst net.Conn, timeoutOpt int) {
 		// read may return EOF with n > 0
 		// should always process n > 0 bytes before handling error
 		if n > 0 {
-			_, err = dst.Write(buf[0:n])
+			_, err := dst.Write(buf[0:n])
 			if IsServer {
 				Traffic.upTraffic(strconv.Itoa(src.LocalAddr().(*net.TCPAddr).Port), n)
 			}

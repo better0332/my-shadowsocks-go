@@ -18,21 +18,31 @@ var (
 	client = &http.Client{Transport: tr}
 )
 
-type trafficStat struct {
-	sync.Mutex
-	m map[string]int
+type trafficStruct struct {
+	Traffic  int
+	ClientIP string
 }
 
-func newTraffic() {
-	Traffic = &trafficStat{m: make(map[string]int, 100)}
+type trafficStat struct {
+	sync.Mutex
+	m map[string]*trafficStruct
+}
+
+func NewTraffic() {
+	Traffic = &trafficStat{m: make(map[string]*trafficStruct, 100)}
 	go Traffic.sendTraffic()
 }
 
-func (t *trafficStat) upTraffic(port string, traffic int) {
+func (t *trafficStat) upTraffic(port string, traffic int, ip string) {
 	t.Lock()
 	defer t.Unlock()
 
-	t.m[port] += traffic
+	if st, ok := t.m[port]; ok {
+		st.Traffic += traffic
+		if ip != "" {
+			st.ClientIP = ip
+		}
+	}
 }
 
 func (t *trafficStat) DelTraffic(port string) {
@@ -71,7 +81,7 @@ func (t *trafficStat) sendTraffic() {
 			}
 			t.Lock()
 			for k, _ := range t.m {
-				t.m[k] = 0
+				t.m[k].Traffic = 0
 			}
 			t.Unlock()
 

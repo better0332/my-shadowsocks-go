@@ -5,7 +5,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	ss "github.com/shadowsocks/shadowsocks-go/shadowsocks"
 	"io"
 	"log"
 	"math/rand"
@@ -14,9 +13,9 @@ import (
 	"path"
 	"strconv"
 	"time"
-)
 
-var debug ss.DebugLog
+	ss "github.com/shadowsocks/shadowsocks-go/shadowsocks"
+)
 
 var (
 	errAddrType      = errors.New("socks addr type not supported")
@@ -132,7 +131,7 @@ func getRequest(conn net.Conn) (rawaddr []byte, host string, err error) {
 
 	rawaddr = buf[idType:reqLen]
 
-	if debug {
+	if ss.Debug {
 		switch buf[idType] {
 		case typeIPv4:
 			host = net.IP(buf[idIP0 : idIP0+net.IPv4len]).String()
@@ -237,7 +236,7 @@ func connectToServer(serverId int, rawaddr []byte, addr string) (remote *ss.Conn
 		}
 		return nil, err
 	}
-	debug.Printf("connected to %s via %s\n", addr, se.server)
+	ss.Debug.Printf("connected to %s via %s\n", addr, se.server)
 	servers.failCnt[serverId] = 0
 	return
 }
@@ -272,9 +271,8 @@ func createServerConn(rawaddr []byte, addr string) (remote *ss.Conn, err error) 
 }
 
 func handleConnection(conn net.Conn) {
-	if debug {
-		debug.Printf("socks connect from %s\n", conn.RemoteAddr().String())
-	}
+	ss.Debug.Printf("socks connect from %s\n", conn.RemoteAddr().String())
+
 	closed := false
 	defer func() {
 		if !closed {
@@ -297,7 +295,7 @@ func handleConnection(conn net.Conn) {
 	// But if connection failed, the client will get connection reset error.
 	_, err = conn.Write([]byte{0x05, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x08, 0x43})
 	if err != nil {
-		debug.Println("send connection confirmation:", err)
+		ss.Debug.Println("send connection confirmation:", err)
 		return
 	}
 
@@ -314,10 +312,10 @@ func handleConnection(conn net.Conn) {
 		}
 	}()
 
-	go ss.PipeThenClose(conn, remote, ss.NO_TIMEOUT)
-	ss.PipeThenClose(remote, conn, ss.NO_TIMEOUT)
+	go ss.PipeThenClose(conn, remote, ss.NO_TIMEOUT, "", "")
+	ss.PipeThenClose(remote, conn, ss.NO_TIMEOUT, "", "")
 	closed = true
-	debug.Println("closed connection to", addr)
+	ss.Debug.Println("closed connection to", addr)
 }
 
 func run(listenAddr string) {
@@ -346,7 +344,7 @@ func main() {
 
 	var configFile, cmdServer, cmdLocal string
 	var cmdConfig ss.Config
-	var printVer bool
+	var printVer, debug bool
 
 	flag.BoolVar(&printVer, "version", false, "print version")
 	flag.StringVar(&configFile, "c", "config.json", "specify config file")
@@ -356,7 +354,7 @@ func main() {
 	flag.IntVar(&cmdConfig.ServerPort, "p", 0, "server port")
 	flag.IntVar(&cmdConfig.LocalPort, "l", 0, "local socks5 proxy port")
 	flag.StringVar(&cmdConfig.Method, "m", "", "encryption method, default: aes-256-cfb")
-	flag.BoolVar((*bool)(&debug), "d", false, "print debug message")
+	flag.BoolVar(&debug, "d", false, "print debug message")
 
 	flag.Parse()
 

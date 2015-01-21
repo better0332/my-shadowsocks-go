@@ -92,7 +92,7 @@ const logCntDelta = 100
 
 var connCnt uint64 // operate by sync/atomic
 
-func handleConnection(conn *ss.Conn) {
+func handleConnection(conn *ss.Conn, port string) {
 	var host string
 
 	newConnCnt := atomic.AddUint64(&connCnt, 1) // connCnt++
@@ -143,8 +143,8 @@ func handleConnection(conn *ss.Conn) {
 		}
 	}
 	ss.Debug.Printf("piping %s<->%s", conn.RemoteAddr(), host)
-	go ss.PipeThenClose(conn, remote, ss.SET_TIMEOUT)
-	ss.PipeThenClose(remote, conn, ss.NO_TIMEOUT)
+	go ss.PipeThenClose(conn, remote, ss.SET_TIMEOUT, port, "out")
+	ss.PipeThenClose(remote, conn, ss.NO_TIMEOUT, port, "in")
 	closed = true
 	return
 }
@@ -274,7 +274,7 @@ func run(port, password string) {
 				continue
 			}
 		}
-		go handleConnection(ss.NewConn(conn, cipher.Copy()))
+		go handleConnection(ss.NewConn(conn, cipher.Copy()), port)
 	}
 }
 
@@ -324,7 +324,6 @@ func main() {
 		os.Exit(0)
 	}
 
-	ss.SetServer(true)
 	ss.SetDebug(debug)
 
 	var err error

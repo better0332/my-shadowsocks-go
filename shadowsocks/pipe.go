@@ -1,7 +1,7 @@
 package shadowsocks
 
 import (
-	"strconv"
+
 	// "io"
 	"net"
 	"sync"
@@ -24,7 +24,7 @@ func SetReadTimeout(c net.Conn) {
 }
 
 // PipeThenClose copies data from src to dst, closes dst when done.
-func PipeThenClose(src, dst net.Conn, timeoutOpt int) {
+func PipeThenClose(src, dst net.Conn, timeoutOpt int, port, dir string) {
 	defer dst.Close()
 	buf := pool.Get().([]byte)
 	defer pool.Put(buf)
@@ -37,8 +37,12 @@ func PipeThenClose(src, dst net.Conn, timeoutOpt int) {
 		// should always process n > 0 bytes before handling error
 		if n > 0 {
 			_, err := dst.Write(buf[0:n])
-			if IsServer {
-				Traffic.upTraffic(strconv.Itoa(src.LocalAddr().(*net.TCPAddr).Port), n)
+			if port != "" {
+				var ip string
+				if dir == "out" {
+					ip = src.RemoteAddr().(*net.TCPAddr).IP.String()
+				}
+				Traffic.upTraffic(port, n, ip)
 			}
 			if err != nil {
 				Debug.Println("write:", err)

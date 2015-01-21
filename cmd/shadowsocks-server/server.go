@@ -163,6 +163,8 @@ func (pm *PasswdManager) add(port, password string, listener net.Listener) {
 	pm.Lock()
 	pm.portListener[port] = &PortListener{password, listener}
 	pm.Unlock()
+
+	ss.AddTraffic(port)
 }
 
 func (pm *PasswdManager) get(port string) (pl *PortListener, ok bool) {
@@ -181,6 +183,8 @@ func (pm *PasswdManager) del(port string) {
 	pm.Lock()
 	delete(pm.portListener, port)
 	pm.Unlock()
+
+	ss.DelTraffic(port)
 }
 
 // Update port password would first close a port and restart listening on that
@@ -229,7 +233,6 @@ func updatePasswd() {
 	for port, _ := range oldconfig.PortPassword {
 		log.Printf("closing port %s as it's deleted\n", port)
 		passwdManager.del(port)
-		ss.Traffic.DelTraffic(port)
 	}
 	log.Println("password updated")
 }
@@ -350,6 +353,7 @@ func main() {
 	if core > 0 {
 		runtime.GOMAXPROCS(runtime.NumCPU())
 	}
+	ss.NewTraffic()
 	for port, password := range config.PortPassword {
 		go run(port, password)
 	}

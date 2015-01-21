@@ -42,7 +42,7 @@ func PipeThenClose(src, dst net.Conn, timeoutOpt int, port, dir string) {
 				if dir == "out" {
 					ip = src.RemoteAddr().(*net.TCPAddr).IP.String()
 				}
-				Traffic.upTraffic(port, n, ip)
+				upTraffic(port, n, ip)
 			}
 			if err != nil {
 				Debug.Println("write:", err)

@@ -12,7 +12,7 @@ import (
 )
 
 var (
-	Traffic *trafficStat
+	ts *trafficStat
 
 	tr     = &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}
 	client = &http.Client{Transport: tr}
@@ -29,15 +29,15 @@ type trafficStat struct {
 }
 
 func NewTraffic() {
-	Traffic = &trafficStat{m: make(map[string]*trafficStruct, 100)}
-	go Traffic.sendTraffic()
+	ts = &trafficStat{m: make(map[string]*trafficStruct, 100)}
+	go sendTraffic()
 }
 
-func (t *trafficStat) upTraffic(port string, traffic int, ip string) {
-	t.Lock()
-	defer t.Unlock()
+func upTraffic(port string, traffic int, ip string) {
+	ts.Lock()
+	defer ts.Unlock()
 
-	if st, ok := t.m[port]; ok {
+	if st, ok := ts.m[port]; ok {
 		st.Traffic += traffic
 		if ip != "" {
 			st.ClientIP = ip
@@ -45,23 +45,30 @@ func (t *trafficStat) upTraffic(port string, traffic int, ip string) {
 	}
 }
 
-func (t *trafficStat) DelTraffic(port string) {
-	t.Lock()
-	defer t.Unlock()
+func DelTraffic(port string) {
+	ts.Lock()
+	defer ts.Unlock()
 
-	delete(t.m, port)
+	delete(ts.m, port)
 }
 
-func (t *trafficStat) sendTraffic() {
+func AddTraffic(port string) {
+	ts.Lock()
+	defer ts.Unlock()
+
+	ts.m[port] = &trafficStruct{}
+}
+
+func sendTraffic() {
 	for {
 		time.Sleep(30 * time.Second)
 
-		t.Lock()
-		if len(t.m) == 0 {
+		ts.Lock()
+		if len(ts.m) == 0 {
 			continue
 		}
-		buf, err := json.Marshal(t.m)
-		t.Unlock()
+		buf, err := json.Marshal(ts.m)
+		ts.Unlock()
 		if err != nil {
 			log.Println(err)
 			continue
@@ -75,15 +82,15 @@ func (t *trafficStat) sendTraffic() {
 				if err != nil {
 					log.Println(err)
 				} else {
-					log.Println(cont)
+					log.Printf("%s\n", cont)
 				}
 				continue
 			}
-			t.Lock()
-			for k, _ := range t.m {
-				t.m[k].Traffic = 0
+			ts.Lock()
+			for k, _ := range ts.m {
+				ts.m[k].Traffic = 0
 			}
-			t.Unlock()
+			ts.Unlock()
 
 			Debug.Println("Update Traffic Stat Success")
 		}

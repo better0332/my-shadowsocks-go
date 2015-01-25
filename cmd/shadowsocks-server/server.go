@@ -92,7 +92,7 @@ const logCntDelta = 100
 
 var connCnt uint64 // operate by sync/atomic
 
-func handleConnection(conn *ss.Conn, port string) {
+func handleConnection(conn *ss.Conn, port string, pflag *uint32) {
 	var host string
 
 	newConnCnt := atomic.AddUint64(&connCnt, 1) // connCnt++
@@ -143,8 +143,8 @@ func handleConnection(conn *ss.Conn, port string) {
 		}
 	}
 	ss.Debug.Printf("piping %s<->%s", conn.RemoteAddr(), host)
-	go ss.PipeThenClose(conn, remote, ss.SET_TIMEOUT, port, "out")
-	ss.PipeThenClose(remote, conn, ss.NO_TIMEOUT, port, "in")
+	go ss.PipeThenClose(conn, remote, ss.SET_TIMEOUT, pflag, port, "out")
+	ss.PipeThenClose(remote, conn, ss.NO_TIMEOUT, pflag, port, "in")
 	closed = true
 	return
 }
@@ -152,6 +152,7 @@ func handleConnection(conn *ss.Conn, port string) {
 type PortListener struct {
 	password string
 	listener net.Listener
+	pflag    *uint32
 }
 
 type PasswdManager struct {
@@ -159,9 +160,9 @@ type PasswdManager struct {
 	portListener map[string]*PortListener
 }
 
-func (pm *PasswdManager) add(port, password string, listener net.Listener) {
+func (pm *PasswdManager) add(port, password string, listener net.Listener, pflag *uint32) {
 	pm.Lock()
-	pm.portListener[port] = &PortListener{password, listener}
+	pm.portListener[port] = &PortListener{password, listener, pflag}
 	pm.Unlock()
 
 	ss.AddTraffic(port)
@@ -183,6 +184,8 @@ func (pm *PasswdManager) del(port string) {
 	pm.Lock()
 	delete(pm.portListener, port)
 	pm.Unlock()
+
+	atomic.StoreUint32(pl.pflag, 1)
 
 	ss.DelTraffic(port)
 }
@@ -257,7 +260,8 @@ func run(port, password string) {
 		log.Printf("error listening port %v: %v\n", port, err)
 		return
 	}
-	passwdManager.add(port, password, ln)
+	var flag uint32 = 0
+	passwdManager.add(port, password, ln, &flag)
 	var cipher *ss.Cipher
 	log.Printf("server listening port %v ...\n", port)
 	for {
@@ -277,7 +281,7 @@ func run(port, password string) {
 				continue
 			}
 		}
-		go handleConnection(ss.NewConn(conn, cipher.Copy()), port)
+		go handleConnection(ss.NewConn(conn, cipher.Copy()), port, &flag)
 	}
 }
 

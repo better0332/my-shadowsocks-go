@@ -5,6 +5,7 @@ import (
 	// "io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -24,11 +25,14 @@ func SetReadTimeout(c net.Conn) {
 }
 
 // PipeThenClose copies data from src to dst, closes dst when done.
-func PipeThenClose(src, dst net.Conn, timeoutOpt int, port, dir string) {
+func PipeThenClose(src, dst net.Conn, timeoutOpt int, pflag *uint32, port, dir string) {
 	defer dst.Close()
 	buf := pool.Get().([]byte)
 	defer pool.Put(buf)
 	for {
+		if pflag != nil && atomic.LoadUint32(pflag) > 0 {
+			break
+		}
 		if timeoutOpt == SET_TIMEOUT {
 			SetReadTimeout(src)
 		}

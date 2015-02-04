@@ -5,7 +5,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	ss "github.com/shadowsocks/shadowsocks-go/shadowsocks"
+	ss "github.com/lixin9311/shadowsocks-go/shadowsocks"
 	"io"
 	"log"
 	"net"
@@ -341,7 +341,7 @@ func runUDP(port, password string) {
 		log.Printf("Error generating cipher for udp port: %s %v\n", port, err)
 		conn.Close()
 	}
-	UDPConn := ss.NewUDPConn(*conn, cipher.Copy())
+	UDPConn := ss.NewUDPConn(conn, cipher.Copy())
 	for {
 		UDPConn.ReadAndHandleUDPReq()
 	}
@@ -420,9 +420,12 @@ func main() {
 	if core > 0 {
 		runtime.GOMAXPROCS(core)
 	}
+	if udp {
+		ss.InitNAT()
+	}
 	for port, password := range config.PortPassword {
 		go run(port, password)
-		if udp == true {
+		if udp {
 			go runUDP(port, password)
 		}
 	}

@@ -420,9 +420,6 @@ func main() {
 	if core > 0 {
 		runtime.GOMAXPROCS(core)
 	}
-	if udp {
-		ss.InitNAT()
-	}
 	for port, password := range config.PortPassword {
 		go run(port, password)
 		if udp {

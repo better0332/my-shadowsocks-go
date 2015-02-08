@@ -37,9 +37,11 @@ type UDP interface {
 	WriteToUDP(b []byte, src *net.UDPAddr) (n int, err error)
 	Write(b []byte) (n int, err error)
 	Close() error
-	LocalAddr() net.Addr
 	SetWriteDeadline(t time.Time) error
 	SetReadDeadline(t time.Time) error
+	LocalAddr() net.Addr
+	RemoteAddr() net.Addr
+	ReadFrom(b []byte) (int, net.Addr, error)
 }
 
 func NewConn(cn net.Conn, cipher *Cipher) *Conn {
@@ -56,56 +58,72 @@ func NewUDPConn(cn UDP, cipher *Cipher) *UDPConn {
 }
 
 type CachedUDPConn struct {
-	Expired bool
 	timer *time.Timer
 	UDP
+	i string
 }
 
 func NewCachedUDPConn(cn UDP) *CachedUDPConn {
-	return &CachedUDPConn{false, nil, cn}
+	return &CachedUDPConn{nil, cn, ""}
 }
 
 func (c *CachedUDPConn) Check() {
-	if !c.Expired {
-		c.Close()
-	}
+	go nl.Delete(c.i)
 }
 
 func (c *CachedUDPConn) Close() error{
-	c.Expired = true
+	c.timer.Stop()
 	return c.UDP.Close()
 }
 
-func (c *CachedUDPConn) SetTimer() {
-	c.timer = time.AfterFunc(readTimeout, c.Check)
+func (c *CachedUDPConn) SetTimer(index string) {
+	c.i = index
+	c.timer = time.AfterFunc(120*time.Second, c.Check)
 }
 
 func (c *CachedUDPConn) Refresh() bool {
-	return c.timer.Reset(readTimeout)
+	return c.timer.Reset(120*time.Second)
 }
 
 type NATlist struct {
 	sync.Mutex
 	Conns map[string]*CachedUDPConn
+	AliveConns int
 }
 
-func (nl *NATlist) Get(srcaddr, dstaddr *net.UDPAddr, cn *UDPConn, header []byte) (c *CachedUDPConn, ok bool, err error){
+func (nl *NATlist) Delete(srcaddr string) {
+	nl.Lock()
+	c , ok := nl.Conns[srcaddr]
+	if ok {
+		c.Close()
+		delete(nl.Conns, srcaddr)
+		nl.AliveConns -= 1
+	}
+	defer nl.Unlock()
+}
+
+func (nl *NATlist) Get(srcaddr *net.UDPAddr, ss *UDPConn) (c *CachedUDPConn, ok bool, err error){
 	nl.Lock()
 	defer nl.Unlock()
-	index := srcaddr.String()+dstaddr.String()
+	index := srcaddr.String()
 	_ , ok = nl.Conns[index]
-	if !ok || nl.Conns[index].Expired {
+	if !ok {
 		//NAT not exists or expired
+		nl.AliveConns += 1
 		delete(nl.Conns, index)
 		ok = false
-		conn, err := net.DialUDP("udp", nil, dstaddr)
+		//full cone
+		conn, err := net.ListenUDP("udp", &net.UDPAddr{
+			IP:   net.IPv6zero,
+			Port: 0,
+		})
 		if err != nil {
 			return nil, false, err
 		}
 		nl.Conns[index] = NewCachedUDPConn(conn)
 		c , _ = nl.Conns[index]
-		c.SetTimer()
-		go Pipeloop(cn, srcaddr, c, header)
+		c.SetTimer(index)
+		go Pipeloop(ss, srcaddr, c)
 	} else {
 		//NAT exists
 		c , _ = nl.Conns[index]
@@ -115,55 +133,55 @@ func (nl *NATlist) Get(srcaddr, dstaddr *net.UDPAddr, cn *UDPConn, header []byte
 	return
 }
 
-func Pipeloop(c *UDPConn, srcaddr *net.UDPAddr, remote UDP, header []byte) {
+func ParseHeader(addr net.Addr) ([]byte, int) {
+//what if the request address type is domain???
+	ip, port, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return nil, 0
+	}
+	buf := make([]byte, 20)
+	IP := net.ParseIP(ip)
+	b1 := IP.To4()
+	iplen := 0
+	if b1 == nil { //ipv6
+		b1 = IP.To16()
+		buf[0] = typeIPv6
+		iplen = net.IPv6len
+	} else { //ipv4
+		buf[0] = typeIPv4
+		iplen = net.IPv4len
+	}
+	copy(buf[1:], b1)
+	port_i, _ := strconv.Atoi(port)
+	binary.BigEndian.PutUint16(buf[1+iplen:], uint16(port_i))
+	return buf[:1+iplen+2], 1+iplen+2
+}
+
+func Pipeloop(ss *UDPConn, srcaddr *net.UDPAddr, remote UDP) {
 	buf := udpBuf.Get()
 	defer udpBuf.Put(buf)
-	l := len(header)
-	copy(buf, header)
+	defer nl.Delete(srcaddr.String())
 	for{
 		remote.SetReadDeadline(time.Now().Add(readTimeout))
-		n, err := remote.Read(buf[l:])
+		n, raddr, err := remote.ReadFrom(buf)
 		if err != nil {
 			if ne, ok := err.(*net.OpError); ok && (ne.Err == syscall.EMFILE || ne.Err == syscall.ENFILE) {
 				// log too many open file error
 				// EMFILE is process reaches open file limits, ENFILE is system limit
 				fmt.Println("[udp]read error:", err)
+			} else if ne.Err.Error() == "use of closed network connection" {
+				fmt.Println("[udp]Connection Closing:", remote.LocalAddr())
 			} else {
-				fmt.Println("[udp]error connecting to:", srcaddr, err)
+				fmt.Println("[udp]error reading from:", remote.LocalAddr(), err)
 			}
 			return
 		}
-		_, err = c.WriteToUDP(buf[:l+n], srcaddr)
+		header, hlen := ParseHeader(raddr)
+		_, err = ss.WriteToUDP(append(header[:hlen], buf[:n]...), srcaddr)
 		if err != nil {
 			return
 		}
 	}
-}
-
-func (nl *NATlist) Checkall() {
-	nl.Lock()
-	closed := 0
-	total := 0
-	for k, v := range nl.Conns {
-		if v.Expired {
-			closed += 1
-			delete(nl.Conns, k)
-		} else {
-			total += 1
-		}
-	}
-	nl.Unlock()
-	time.AfterFunc(readTimeout, nl.Checkall)
-	if total == 0 && closed == 0{
-		return
-	}
-	fmt.Println("[udp]Alive Connections:", total, "Closed Connections:", closed)
-	
-	return
-}
-
-func InitNAT() {
-	time.AfterFunc(readTimeout, nl.Checkall)
 }
 
 var nl = NATlist{Conns: map[string]*CachedUDPConn{}}
@@ -194,20 +212,16 @@ func (c *UDPConn) handleUDPConnection(n int, src *net.UDPAddr, receive []byte) {
 		fmt.Sprintf("[udp]addr type %d not supported", receive[idType])
 		return
 	}
-	req := make([]byte, reqLen)
-	for i:=0;i<reqLen;i++ {
-		req[i] = receive[i]
-	}
 	dst := &net.UDPAddr{
 		IP:   dstIP,
 		Port: int(binary.BigEndian.Uint16(receive[reqLen-2 : reqLen])),
 	}
-	remote, _, err := nl.Get(src, dst, c, req)
+	remote, _, err := nl.Get(src, c)
 	if err != nil {
 		return
 	}
 	remote.SetWriteDeadline(time.Now().Add(readTimeout))
-	_, err = remote.Write(receive[reqLen:n])
+	_, err = remote.WriteToUDP(receive[reqLen:n], dst)
 	if err != nil {
 		if ne, ok := err.(*net.OpError); ok && (ne.Err == syscall.EMFILE || ne.Err == syscall.ENFILE) {
 			// log too many open file error
@@ -230,7 +244,6 @@ func (c *UDPConn) ReadAndHandleUDPReq()  {
 	}
 	go c.handleUDPConnection(n, src, buf)
 }
-
 
 func RawAddr(addr string) (buf []byte, err error) {
 	host, portStr, err := net.SplitHostPort(addr)

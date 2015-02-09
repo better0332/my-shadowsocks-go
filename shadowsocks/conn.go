@@ -99,6 +99,9 @@ func (nl *NATlist) Delete(srcaddr string) {
 		delete(nl.Conns, srcaddr)
 		nl.AliveConns -= 1
 	}
+	for k, _  := range ReqList {
+		delete(ReqList, k)
+	}
 	defer nl.Unlock()
 }
 
@@ -176,13 +179,22 @@ func Pipeloop(ss *UDPConn, srcaddr *net.UDPAddr, remote UDP) {
 			}
 			return
 		}
-		header, hlen := ParseHeader(raddr)
-		_, err = ss.WriteToUDP(append(header[:hlen], buf[:n]...), srcaddr)
-		if err != nil {
-			return
+		// need improvement here
+		if N, ok := ReqList[raddr.String()]; ok {
+			go ss.WriteToUDP(append(N.Req[:N.ReqLen], buf[:n]...), srcaddr)
+		}	else {
+			header, hlen := ParseHeader(raddr)
+			go ss.WriteToUDP(append(header[:hlen], buf[:n]...), srcaddr)
 		}
 	}
 }
+
+type ReqNode struct {
+	Req []byte
+	ReqLen int
+}
+
+var ReqList = map[string]*ReqNode{}
 
 var nl = NATlist{Conns: map[string]*CachedUDPConn{}}
 
@@ -216,6 +228,14 @@ func (c *UDPConn) handleUDPConnection(n int, src *net.UDPAddr, receive []byte) {
 		IP:   dstIP,
 		Port: int(binary.BigEndian.Uint16(receive[reqLen-2 : reqLen])),
 	}
+	if _, ok := ReqList[dst.String()]; !ok {
+		req := make([]byte, reqLen)
+		for i:=0;i<reqLen;i++ {
+			req[i] = receive[i]
+		}
+		ReqList[dst.String()] = &ReqNode{req, reqLen}
+	}
+
 	remote, _, err := nl.Get(src, c)
 	if err != nil {
 		return

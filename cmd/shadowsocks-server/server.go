@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -118,7 +119,18 @@ func handleConnection(conn *ss.Conn, port string, pflag *uint32) {
 		return
 	}
 	ss.Debug.Println("connecting", host)
-	remote, err := net.Dial("tcp", host)
+	h, p, _ := net.SplitHostPort(host)
+	addr, err := net.ResolveIPAddr("ip", h)
+	if err != nil {
+		log.Println(err)
+		return
+	}
+	ip := addr.String()
+	if strings.HasPrefix(ip, "127.") || strings.HasPrefix(ip, "10.8.") || ip == "::1" {
+		log.Printf("illegal connect to local network(%s)\n", ip)
+		return
+	}
+	remote, err := net.Dial("tcp", net.JoinHostPort(ip, p))
 	if err != nil {
 		if ne, ok := err.(*net.OpError); ok && (ne.Err == syscall.EMFILE || ne.Err == syscall.ENFILE) {
 			// log too many open file error

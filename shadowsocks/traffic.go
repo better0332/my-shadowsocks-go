@@ -65,6 +65,7 @@ func sendTraffic() {
 
 		ts.Lock()
 		if len(ts.m) == 0 {
+			ts.Unlock()
 			continue
 		}
 		buf, err := json.Marshal(ts.m)
@@ -74,10 +75,10 @@ func sendTraffic() {
 			continue
 		}
 
-		if resp, err := client.PostForm("https://www.webscan8.com/traffic_stat.php",
+		if resp, err := client.PostForm("https://shadowrockets.com/traffic_stat.php",
 			url.Values{"traffic": {string(buf)}}); err == nil {
-			defer resp.Body.Close()
 			cont, err := ioutil.ReadAll(resp.Body)
+			resp.Body.Close()
 			if string(cont) != "success" {
 				if err != nil {
 					log.Println(err)

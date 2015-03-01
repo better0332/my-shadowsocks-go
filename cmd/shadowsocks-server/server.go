@@ -2,7 +2,6 @@ package main
 
 import (
 	"encoding/binary"
-	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -93,7 +92,7 @@ const logCntDelta = 100
 
 var connCnt uint64 // operate by sync/atomic
 
-func handleConnection(conn *ss.Conn, port string, pflag *uint32) {
+func handleConnection(conn *ss.Conn, port string, pflag *uint32, openvpn string) {
 	var host string
 
 	newConnCnt := atomic.AddUint64(&connCnt, 1) // connCnt++
@@ -126,7 +125,8 @@ func handleConnection(conn *ss.Conn, port string, pflag *uint32) {
 		return
 	}
 	ip := addr.String()
-	if strings.HasPrefix(ip, "127.") || strings.HasPrefix(ip, "10.8.") || ip == "::1" {
+	if (strings.HasPrefix(ip, "127.") && (p != "1194" || openvpn != "ok")) ||
+		strings.HasPrefix(ip, "10.8.") || ip == "::1" {
 		log.Printf("illegal connect to local network(%s)\n", ip)
 		return
 	}
@@ -163,6 +163,7 @@ func handleConnection(conn *ss.Conn, port string, pflag *uint32) {
 
 type PortListener struct {
 	password string
+	openvpn  string
 	listener net.Listener
 	pflag    *uint32
 }
@@ -172,9 +173,9 @@ type PasswdManager struct {
 	portListener map[string]*PortListener
 }
 
-func (pm *PasswdManager) add(port, password string, listener net.Listener, pflag *uint32) {
+func (pm *PasswdManager) add(port string, password [2]string, listener net.Listener, pflag *uint32) {
 	pm.Lock()
-	pm.portListener[port] = &PortListener{password, listener, pflag}
+	pm.portListener[port] = &PortListener{password[0], password[1], listener, pflag}
 	pm.Unlock()
 
 	ss.AddTraffic(port)
@@ -206,12 +207,12 @@ func (pm *PasswdManager) del(port string) {
 // port. A different approach would be directly change the password used by
 // that port, but that requires **sharing** password between the port listener
 // and password manager.
-func (pm *PasswdManager) updatePortPasswd(port, password string) {
+func (pm *PasswdManager) updatePortPasswd(port string, password [2]string) {
 	pl, ok := pm.get(port)
 	if !ok {
 		log.Printf("new port %s added\n", port)
 	} else {
-		if pl.password == password {
+		if pl.password == password[0] && pl.openvpn == password[1] {
 			return
 		}
 		log.Printf("closing port %s to update password\n", port)
@@ -266,8 +267,8 @@ func waitSignal() {
 	}
 }
 
-func run(port, password string) {
-	ln, err := net.Listen("tcp", ":"+port)
+func run(port string, password [2]string) {
+	ln, err := net.Listen(netTcp, ":"+port)
 	if err != nil {
 		log.Printf("error listening port %v: %v\n", port, err)
 		return
@@ -286,14 +287,14 @@ func run(port, password string) {
 		// Creating cipher upon first connection.
 		if cipher == nil {
 			log.Println("creating cipher for port:", port)
-			cipher, err = ss.NewCipher(config.Method, password)
+			cipher, err = ss.NewCipher(config.Method, password[0])
 			if err != nil {
 				log.Printf("Error generating cipher for port: %s %v\n", port, err)
 				conn.Close()
 				continue
 			}
 		}
-		go handleConnection(ss.NewConn(conn, cipher.Copy()), port, &flag)
+		go handleConnection(ss.NewConn(conn, cipher.Copy()), port, &flag, password[1])
 	}
 }
 
@@ -303,12 +304,10 @@ func enoughOptions(config *ss.Config) bool {
 
 func unifyPortPassword(config *ss.Config) (err error) {
 	if len(config.PortPassword) == 0 { // this handles both nil PortPassword and empty one
-		if !enoughOptions(config) {
-			fmt.Fprintln(os.Stderr, "must specify both port and password")
-			return errors.New("not enough options")
+		if enoughOptions(config) {
+			port := strconv.Itoa(config.ServerPort)
+			config.PortPassword = map[string][2]string{port: [2]string{config.Password}}
 		}
-		port := strconv.Itoa(config.ServerPort)
-		config.PortPassword = map[string]string{port: config.Password}
 	} else {
 		if config.Password != "" || config.ServerPort != 0 {
 			fmt.Fprintln(os.Stderr, "given port_password, ignore server_port and password option")
@@ -319,6 +318,7 @@ func unifyPortPassword(config *ss.Config) (err error) {
 
 var configFile string
 var config *ss.Config
+var netTcp, netUdp string
 
 func main() {
 	log.SetOutput(os.Stdout)
@@ -333,6 +333,7 @@ func main() {
 	flag.IntVar(&cmdConfig.ServerPort, "p", 0, "server port")
 	flag.IntVar(&cmdConfig.Timeout, "t", 60, "connection timeout (in seconds)")
 	flag.StringVar(&cmdConfig.Method, "m", "", "encryption method, default: aes-256-cfb")
+	flag.IntVar(&cmdConfig.Net, "n", 0, "ipv4(4) or ipv6(6) or both(0), default is both")
 	flag.IntVar(&core, "core", 0, "maximum number of CPU cores to use, default is determinied by logical CPUs on server")
 	flag.BoolVar(&debug, "d", false, "print debug message")
 
@@ -355,6 +356,17 @@ func main() {
 		config = &cmdConfig
 	} else {
 		ss.UpdateConfig(config, &cmdConfig)
+	}
+	switch config.Net {
+	case 4:
+		netTcp = "tcp4"
+		netUdp = "udp4"
+	case 6:
+		netTcp = "tcp6"
+		netUdp = "udp6"
+	default:
+		netTcp = "tcp"
+		netUdp = "udp"
 	}
 	if config.Method == "" {
 		config.Method = "aes-256-cfb"

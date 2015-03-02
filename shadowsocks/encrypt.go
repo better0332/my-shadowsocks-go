@@ -2,8 +2,6 @@ package shadowsocks
 
 import (
 	"bytes"
-	"golang.org/x/crypto/blowfish"
-	"golang.org/x/crypto/cast5"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/des"
@@ -12,6 +10,9 @@ import (
 	"crypto/rc4"
 	"encoding/binary"
 	"errors"
+	"github.com/codahale/chacha20"
+	"golang.org/x/crypto/blowfish"
+	"golang.org/x/crypto/cast5"
 	"io"
 )
 
@@ -137,6 +138,10 @@ func newRC4MD5Stream(key, iv []byte, _ DecOrEnc) (cipher.Stream, error) {
 	return rc4.NewCipher(rc4key)
 }
 
+func newChaCha20Stream(key, iv []byte, _ DecOrEnc) (cipher.Stream, error) {
+	return chacha20.New(key, iv)
+}
+
 type cipherInfo struct {
 	keyLen    int
 	ivLen     int
@@ -153,6 +158,7 @@ var cipherMethod = map[string]*cipherInfo{
 	"rc4-md5":     {16, 16, newRC4MD5Stream},
 	"rc4":         {16, 0, nil},
 	"table":       {16, 0, nil},
+	"chacha20":    {32, 8, newChaCha20Stream},
 }
 
 func CheckCipherMethod(method string) error {

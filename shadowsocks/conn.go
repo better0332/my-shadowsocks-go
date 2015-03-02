@@ -6,9 +6,9 @@ import (
 	"io"
 	"net"
 	"strconv"
-	"time"
-	"syscall"
 	"sync"
+	"syscall"
+	"time"
 )
 
 const (
@@ -71,7 +71,7 @@ func (c *CachedUDPConn) Check() {
 	go nl.Delete(c.i)
 }
 
-func (c *CachedUDPConn) Close() error{
+func (c *CachedUDPConn) Close() error {
 	c.timer.Stop()
 	return c.UDP.Close()
 }
@@ -82,34 +82,34 @@ func (c *CachedUDPConn) SetTimer(index string) {
 }
 
 func (c *CachedUDPConn) Refresh() bool {
-	return c.timer.Reset(120*time.Second)
+	return c.timer.Reset(120 * time.Second)
 }
 
 type NATlist struct {
 	sync.Mutex
-	Conns map[string]*CachedUDPConn
+	Conns      map[string]*CachedUDPConn
 	AliveConns int
 }
 
 func (nl *NATlist) Delete(srcaddr string) {
 	nl.Lock()
-	c , ok := nl.Conns[srcaddr]
+	c, ok := nl.Conns[srcaddr]
 	if ok {
 		c.Close()
 		delete(nl.Conns, srcaddr)
 		nl.AliveConns -= 1
 	}
-	for k, _  := range ReqList {
+	for k, _ := range ReqList {
 		delete(ReqList, k)
 	}
 	defer nl.Unlock()
 }
 
-func (nl *NATlist) Get(srcaddr *net.UDPAddr, ss *UDPConn) (c *CachedUDPConn, ok bool, err error){
+func (nl *NATlist) Get(srcaddr *net.UDPAddr, ss *UDPConn) (c *CachedUDPConn, ok bool, err error) {
 	nl.Lock()
 	defer nl.Unlock()
 	index := srcaddr.String()
-	_ , ok = nl.Conns[index]
+	_, ok = nl.Conns[index]
 	if !ok {
 		//NAT not exists or expired
 		nl.AliveConns += 1
@@ -124,12 +124,12 @@ func (nl *NATlist) Get(srcaddr *net.UDPAddr, ss *UDPConn) (c *CachedUDPConn, ok 
 			return nil, false, err
 		}
 		nl.Conns[index] = NewCachedUDPConn(conn)
-		c , _ = nl.Conns[index]
+		c, _ = nl.Conns[index]
 		c.SetTimer(index)
 		go Pipeloop(ss, srcaddr, c)
 	} else {
 		//NAT exists
-		c , _ = nl.Conns[index]
+		c, _ = nl.Conns[index]
 		c.Refresh()
 	}
 	err = nil
@@ -137,7 +137,7 @@ func (nl *NATlist) Get(srcaddr *net.UDPAddr, ss *UDPConn) (c *CachedUDPConn, ok 
 }
 
 func ParseHeader(addr net.Addr) ([]byte, int) {
-//what if the request address type is domain???
+	//what if the request address type is domain???
 	ip, port, err := net.SplitHostPort(addr.String())
 	if err != nil {
 		return nil, 0
@@ -157,14 +157,14 @@ func ParseHeader(addr net.Addr) ([]byte, int) {
 	copy(buf[1:], b1)
 	port_i, _ := strconv.Atoi(port)
 	binary.BigEndian.PutUint16(buf[1+iplen:], uint16(port_i))
-	return buf[:1+iplen+2], 1+iplen+2
+	return buf[:1+iplen+2], 1 + iplen + 2
 }
 
 func Pipeloop(ss *UDPConn, srcaddr *net.UDPAddr, remote UDP) {
-	buf := udpBuf.Get()
-	defer udpBuf.Put(buf)
+	buf := pool.Get().([]byte)
+	defer pool.Put(buf)
 	defer nl.Delete(srcaddr.String())
-	for{
+	for {
 		remote.SetReadDeadline(time.Now().Add(readTimeout))
 		n, raddr, err := remote.ReadFrom(buf)
 		if err != nil {
@@ -182,7 +182,7 @@ func Pipeloop(ss *UDPConn, srcaddr *net.UDPAddr, remote UDP) {
 		// need improvement here
 		if N, ok := ReqList[raddr.String()]; ok {
 			go ss.WriteToUDP(append(N.Req[:N.ReqLen], buf[:n]...), srcaddr)
-		}	else {
+		} else {
 			header, hlen := ParseHeader(raddr)
 			go ss.WriteToUDP(append(header[:hlen], buf[:n]...), srcaddr)
 		}
@@ -190,7 +190,7 @@ func Pipeloop(ss *UDPConn, srcaddr *net.UDPAddr, remote UDP) {
 }
 
 type ReqNode struct {
-	Req []byte
+	Req    []byte
 	ReqLen int
 }
 
@@ -198,12 +198,10 @@ var ReqList = map[string]*ReqNode{}
 
 var nl = NATlist{Conns: map[string]*CachedUDPConn{}}
 
-var udpBuf = NewLeakyBuf(nBuf, bufSize)
-
 func (c *UDPConn) handleUDPConnection(n int, src *net.UDPAddr, receive []byte) {
 	var dstIP net.IP
 	var reqLen int
-	defer udpBuf.Put(receive)
+	defer pool.Put(receive)
 
 	switch receive[idType] {
 	case typeIPv4:
@@ -214,9 +212,9 @@ func (c *UDPConn) handleUDPConnection(n int, src *net.UDPAddr, receive []byte) {
 		dstIP = net.IP(receive[idIP0 : idIP0+net.IPv6len])
 	case typeDm:
 		reqLen = int(receive[idDmLen]) + lenDmBase
-		dIP, err := net.ResolveIPAddr("ip" ,string(receive[idDm0 : idDm0+receive[idDmLen]]))
-		if err != nil{
-			fmt.Sprintf("[udp]failed to resolve domain name: %s\n", string(receive[idDm0 : idDm0+receive[idDmLen]]))
+		dIP, err := net.ResolveIPAddr("ip", string(receive[idDm0:idDm0+receive[idDmLen]]))
+		if err != nil {
+			fmt.Sprintf("[udp]failed to resolve domain name: %s\n", string(receive[idDm0:idDm0+receive[idDmLen]]))
 			return
 		}
 		dstIP = dIP.IP
@@ -230,7 +228,7 @@ func (c *UDPConn) handleUDPConnection(n int, src *net.UDPAddr, receive []byte) {
 	}
 	if _, ok := ReqList[dst.String()]; !ok {
 		req := make([]byte, reqLen)
-		for i:=0;i<reqLen;i++ {
+		for i := 0; i < reqLen; i++ {
 			req[i] = receive[i]
 		}
 		ReqList[dst.String()] = &ReqNode{req, reqLen}
@@ -256,9 +254,9 @@ func (c *UDPConn) handleUDPConnection(n int, src *net.UDPAddr, receive []byte) {
 	return
 }
 
-func (c *UDPConn) ReadAndHandleUDPReq()  {
-	buf := udpBuf.Get()
-	n, src, err := c.ReadFromUDP(buf[0:])
+func (c *UDPConn) ReadAndHandleUDPReq() {
+	buf := pool.Get().([]byte)
+	n, src, err := c.ReadFromUDP(buf)
 	if err != nil {
 		return
 	}
@@ -312,35 +310,35 @@ func Dial(addr, server string, cipher *Cipher) (c *Conn, err error) {
 
 //n is the size of the payload
 func (c *UDPConn) ReadFromUDP(b []byte) (n int, src *net.UDPAddr, err error) {
-	buf := udpBuf.Get()
-	n, src, err = c.UDP.ReadFromUDP(buf[0:])
+	buf := pool.Get().([]byte)
+	n, src, err = c.UDP.ReadFromUDP(buf)
 	if err != nil {
 		return
 	}
-	defer udpBuf.Put(buf)
+	defer pool.Put(buf)
 
 	iv := buf[:c.info.ivLen]
 	if err = c.initDecrypt(iv); err != nil {
 		return
 	}
-	c.decrypt(b[0:n - c.info.ivLen], buf[c.info.ivLen : n])
+	c.decrypt(b[0:n-c.info.ivLen], buf[c.info.ivLen:n])
 	n = n - c.info.ivLen
 	return
 }
 
 func (c *UDPConn) Read(b []byte) (n int, err error) {
-	buf := udpBuf.Get()
+	buf := pool.Get().([]byte)
 	n, err = c.UDP.Read(buf[0:])
 	if err != nil {
 		return
 	}
-	defer udpBuf.Put(buf)
+	defer pool.Put(buf)
 
 	iv := buf[:c.info.ivLen]
 	if err = c.initDecrypt(iv); err != nil {
 		return
 	}
-	c.decrypt(b[0:n - c.info.ivLen], buf[c.info.ivLen : n])
+	c.decrypt(b[0:n-c.info.ivLen], buf[c.info.ivLen:n])
 	n = n - c.info.ivLen
 	return
 }
@@ -360,7 +358,7 @@ func (c *UDPConn) WriteToUDP(b []byte, src *net.UDPAddr) (n int, err error) {
 	cipherData = make([]byte, len(b)+len(iv))
 	copy(cipherData, iv)
 	dataStart = len(iv)
-	
+
 	c.encrypt(cipherData[dataStart:], b)
 	n, err = c.UDP.WriteToUDP(cipherData, src)
 	return
@@ -380,7 +378,7 @@ func (c *UDPConn) Write(b []byte) (n int, err error) {
 	cipherData = make([]byte, len(b)+len(iv))
 	copy(cipherData, iv)
 	dataStart = len(iv)
-	
+
 	c.encrypt(cipherData[dataStart:], b)
 	n, err = c.UDP.Write(cipherData)
 	return

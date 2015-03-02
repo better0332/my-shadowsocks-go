@@ -31,13 +31,13 @@ func TestServerMultiPort(t *testing.T) {
 		t.Fatal("error parsing ../sample-config/server-multi-port.json:", err)
 	}
 
-	if config.PortPassword["8387"] != "foobar" {
+	if config.PortPassword["8387"][0] != "foobar" {
 		t.Error("wrong multiple password for port 8387")
 	}
-	if config.PortPassword["8388"] != "barfoo" {
+	if config.PortPassword["8388"][0] != "barfoo" {
 		t.Error("wrong multiple password for port 8388")
 	}
-	if config.PortPassword["8389"] != "" {
+	if config.PortPassword["8389"][0] != "" {
 		t.Error("should have no password for port 8389")
 	}
 }

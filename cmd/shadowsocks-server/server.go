@@ -170,7 +170,9 @@ type PortListener struct {
 
 type UDPListener struct {
 	password string
-	listener *net.UDPConn
+	openvpn  string
+	listener net.PacketConn
+	pflag    *uint32
 }
 
 type PasswdManager struct {
@@ -187,9 +189,9 @@ func (pm *PasswdManager) add(port string, password [2]string, listener net.Liste
 	ss.AddTraffic(port)
 }
 
-func (pm *PasswdManager) addUDP(port, password string, listener *net.UDPConn) {
+func (pm *PasswdManager) addUDP(port string, password [2]string, listener net.PacketConn, pflag *uint32) {
 	pm.Lock()
-	pm.udpListener[port] = &UDPListener{password, listener}
+	pm.udpListener[port] = &UDPListener{password[0], password[1], listener, pflag}
 	pm.Unlock()
 }
 
@@ -332,26 +334,23 @@ func run(port string, password [2]string) {
 	}
 }
 
-func runUDP(port, password string) {
+func runUDP(port string, password [2]string) {
 	var cipher *ss.Cipher
-	port_i, _ := strconv.Atoi(port)
 	log.Printf("listening udp port %v\n", port)
-	conn, err := net.ListenUDP("udp", &net.UDPAddr{
-		IP:   net.IPv6zero,
-		Port: port_i,
-	})
-	passwdManager.addUDP(port, password, conn)
+	conn, err := net.ListenPacket(netUdp, ":"+port)
 	if err != nil {
 		log.Printf("error listening udp port %v: %v\n", port, err)
 		return
 	}
+	var flag uint32 = 0
+	passwdManager.addUDP(port, password, conn, &flag)
 	defer conn.Close()
-	cipher, err = ss.NewCipher(config.Method, password)
+	cipher, err = ss.NewCipher(config.Method, password[0])
 	if err != nil {
 		log.Printf("Error generating cipher for udp port: %s %v\n", port, err)
 		conn.Close()
 	}
-	UDPConn := ss.NewUDPConn(conn, cipher.Copy())
+	UDPConn := ss.NewUDPConn(conn.(*net.UDPConn), cipher.Copy())
 	for {
 		UDPConn.ReadAndHandleUDPReq()
 	}
@@ -378,12 +377,13 @@ func unifyPortPassword(config *ss.Config) (err error) {
 var configFile string
 var config *ss.Config
 var netTcp, netUdp string
+var udp bool
 
 func main() {
 	log.SetOutput(os.Stdout)
 
 	var cmdConfig ss.Config
-	var printVer, udp, debug bool
+	var printVer, debug bool
 	var core int
 
 	flag.BoolVar(&printVer, "version", false, "print version")

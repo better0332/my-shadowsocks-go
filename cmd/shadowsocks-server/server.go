@@ -168,9 +168,15 @@ type PortListener struct {
 	pflag    *uint32
 }
 
+type UDPListener struct {
+	password string
+	listener *net.UDPConn
+}
+
 type PasswdManager struct {
 	sync.Mutex
 	portListener map[string]*PortListener
+	udpListener  map[string]*UDPListener
 }
 
 func (pm *PasswdManager) add(port string, password [2]string, listener net.Listener, pflag *uint32) {
@@ -181,9 +187,22 @@ func (pm *PasswdManager) add(port string, password [2]string, listener net.Liste
 	ss.AddTraffic(port)
 }
 
+func (pm *PasswdManager) addUDP(port, password string, listener *net.UDPConn) {
+	pm.Lock()
+	pm.udpListener[port] = &UDPListener{password, listener}
+	pm.Unlock()
+}
+
 func (pm *PasswdManager) get(port string) (pl *PortListener, ok bool) {
 	pm.Lock()
 	pl, ok = pm.portListener[port]
+	pm.Unlock()
+	return
+}
+
+func (pm *PasswdManager) getUDP(port string) (pl *UDPListener, ok bool) {
+	pm.Lock()
+	pl, ok = pm.udpListener[port]
 	pm.Unlock()
 	return
 }
@@ -193,9 +212,19 @@ func (pm *PasswdManager) del(port string) {
 	if !ok {
 		return
 	}
+	if udp {
+		upl, ok := pm.getUDP(port)
+		if !ok {
+			return
+		}
+		upl.listener.Close()
+	}
 	pl.listener.Close()
 	pm.Lock()
 	delete(pm.portListener, port)
+	if udp {
+		delete(pm.udpListener, port)
+	}
 	pm.Unlock()
 
 	atomic.StoreUint32(pl.pflag, 1)
@@ -221,9 +250,14 @@ func (pm *PasswdManager) updatePortPasswd(port string, password [2]string) {
 	// run will add the new port listener to passwdManager.
 	// So there maybe concurrent access to passwdManager and we need lock to protect it.
 	go run(port, password)
+	if udp {
+		pl, _ := pm.getUDP(port)
+		pl.listener.Close()
+		go runUDP(port, password)
+	}
 }
 
-var passwdManager = PasswdManager{portListener: map[string]*PortListener{}}
+var passwdManager = PasswdManager{portListener: map[string]*PortListener{}, udpListener: map[string]*UDPListener{}}
 
 func updatePasswd() {
 	log.Println("updating password")
@@ -298,6 +332,31 @@ func run(port string, password [2]string) {
 	}
 }
 
+func runUDP(port, password string) {
+	var cipher *ss.Cipher
+	port_i, _ := strconv.Atoi(port)
+	log.Printf("listening udp port %v\n", port)
+	conn, err := net.ListenUDP("udp", &net.UDPAddr{
+		IP:   net.IPv6zero,
+		Port: port_i,
+	})
+	passwdManager.addUDP(port, password, conn)
+	if err != nil {
+		log.Printf("error listening udp port %v: %v\n", port, err)
+		return
+	}
+	defer conn.Close()
+	cipher, err = ss.NewCipher(config.Method, password)
+	if err != nil {
+		log.Printf("Error generating cipher for udp port: %s %v\n", port, err)
+		conn.Close()
+	}
+	UDPConn := ss.NewUDPConn(conn, cipher.Copy())
+	for {
+		UDPConn.ReadAndHandleUDPReq()
+	}
+}
+
 func enoughOptions(config *ss.Config) bool {
 	return config.ServerPort != 0 && config.Password != ""
 }
@@ -324,7 +383,7 @@ func main() {
 	log.SetOutput(os.Stdout)
 
 	var cmdConfig ss.Config
-	var printVer, debug bool
+	var printVer, udp, debug bool
 	var core int
 
 	flag.BoolVar(&printVer, "version", false, "print version")
@@ -335,8 +394,8 @@ func main() {
 	flag.StringVar(&cmdConfig.Method, "m", "", "encryption method, default: aes-256-cfb")
 	flag.IntVar(&cmdConfig.Net, "n", 0, "ipv4(4) or ipv6(6) or both(0), default is both")
 	flag.IntVar(&core, "core", 0, "maximum number of CPU cores to use, default is determinied by logical CPUs on server")
+	flag.BoolVar(&udp, "u", false, "UDP Relay")
 	flag.BoolVar(&debug, "d", false, "print debug message")
-
 	flag.Parse()
 
 	if printVer {
@@ -384,6 +443,9 @@ func main() {
 	ss.NewTraffic()
 	for port, password := range config.PortPassword {
 		go run(port, password)
+		if udp {
+			go runUDP(port, password)
+		}
 	}
 
 	waitSignal()

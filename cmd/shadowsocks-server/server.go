@@ -335,8 +335,6 @@ func run(port string, password [2]string) {
 }
 
 func runUDP(port string, password [2]string) {
-	var cipher *ss.Cipher
-	log.Printf("listening udp port %v\n", port)
 	conn, err := net.ListenPacket(netUdp, ":"+port)
 	if err != nil {
 		log.Printf("error listening udp port %v: %v\n", port, err)
@@ -344,7 +342,9 @@ func runUDP(port string, password [2]string) {
 	}
 	var flag uint32 = 0
 	passwdManager.addUDP(port, password, conn, &flag)
+	log.Printf("server listening udp port %v ...\n", port)
 	defer conn.Close()
+	var cipher *ss.Cipher
 	cipher, err = ss.NewCipher(config.Method, password[0])
 	if err != nil {
 		log.Printf("Error generating cipher for udp port: %s %v\n", port, err)

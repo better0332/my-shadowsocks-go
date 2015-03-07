@@ -253,9 +253,11 @@ func (pm *PasswdManager) updatePortPasswd(port string, password [2]string) {
 	// So there maybe concurrent access to passwdManager and we need lock to protect it.
 	go run(port, password)
 	if udp {
-		pl, _ := pm.getUDP(port)
-		pl.listener.Close()
-		go runUDP(port, password)
+		pl, ok := pm.getUDP(port)
+		if ok {
+			pl.listener.Close()
+			go runUDP(port, password)
+		}
 	}
 }
 

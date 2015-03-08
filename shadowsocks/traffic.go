@@ -56,7 +56,9 @@ func AddTraffic(port string) {
 	ts.Lock()
 	defer ts.Unlock()
 
-	ts.m[port] = &trafficStruct{}
+	if _, ok := ts.m[port]; !ok {
+		ts.m[port] = &trafficStruct{}
+	}
 }
 
 func sendTraffic() {

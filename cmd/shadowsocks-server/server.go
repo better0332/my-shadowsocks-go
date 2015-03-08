@@ -171,7 +171,7 @@ type PortListener struct {
 type UDPListener struct {
 	password string
 	openvpn  string
-	listener net.PacketConn
+	listener *net.UDPConn
 }
 
 type PasswdManager struct {
@@ -188,10 +188,12 @@ func (pm *PasswdManager) add(port string, password [2]string, listener net.Liste
 	ss.AddTraffic(port)
 }
 
-func (pm *PasswdManager) addUDP(port string, password [2]string, listener net.PacketConn) {
+func (pm *PasswdManager) addUDP(port string, password [2]string, listener *net.UDPConn) {
 	pm.Lock()
 	pm.udpListener[port] = &UDPListener{password[0], password[1], listener}
 	pm.Unlock()
+
+	ss.AddTraffic(port)
 }
 
 func (pm *PasswdManager) get(port string) (pl *PortListener, ok bool) {

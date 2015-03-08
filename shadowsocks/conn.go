@@ -68,7 +68,7 @@ func NewCachedUDPConn(cn UDP) *CachedUDPConn {
 }
 
 func (c *CachedUDPConn) Check() {
-	go nl.Delete(c.i)
+	nl.Delete(c.i)
 }
 
 func (c *CachedUDPConn) Close() error {
@@ -93,16 +93,14 @@ type NATlist struct {
 
 func (nl *NATlist) Delete(srcaddr string) {
 	nl.Lock()
+	defer nl.Unlock()
 	c, ok := nl.Conns[srcaddr]
 	if ok {
 		c.Close()
 		delete(nl.Conns, srcaddr)
 		nl.AliveConns -= 1
 	}
-	for k, _ := range ReqList {
-		delete(ReqList, k)
-	}
-	defer nl.Unlock()
+	ReqList = map[string]*ReqNode{} //del all
 }
 
 func (nl *NATlist) Get(srcaddr *net.UDPAddr, ss *UDPConn) (c *CachedUDPConn, ok bool, err error) {
@@ -112,19 +110,17 @@ func (nl *NATlist) Get(srcaddr *net.UDPAddr, ss *UDPConn) (c *CachedUDPConn, ok 
 	_, ok = nl.Conns[index]
 	if !ok {
 		//NAT not exists or expired
+		Debug.Printf("new udp conn %v<-->%v\n", srcaddr, ss.LocalAddr())
 		nl.AliveConns += 1
-		delete(nl.Conns, index)
 		ok = false
 		//full cone
-		conn, err := net.ListenUDP("udp", &net.UDPAddr{
-			IP:   net.IPv6zero,
-			Port: 0,
-		})
+		addr, _ := net.ResolveUDPAddr("udp", ":0")
+		conn, err := net.ListenUDP("udp", addr)
 		if err != nil {
 			return nil, false, err
 		}
-		nl.Conns[index] = NewCachedUDPConn(conn)
-		c, _ = nl.Conns[index]
+		c = NewCachedUDPConn(conn)
+		nl.Conns[index] = c
 		c.SetTimer(index)
 		go Pipeloop(ss, srcaddr, c)
 	} else {
@@ -136,11 +132,11 @@ func (nl *NATlist) Get(srcaddr *net.UDPAddr, ss *UDPConn) (c *CachedUDPConn, ok 
 	return
 }
 
-func ParseHeader(addr net.Addr) ([]byte, int) {
+func ParseHeader(addr net.Addr) []byte {
 	//what if the request address type is domain???
 	ip, port, err := net.SplitHostPort(addr.String())
 	if err != nil {
-		return nil, 0
+		return nil
 	}
 	buf := make([]byte, 20)
 	IP := net.ParseIP(ip)
@@ -157,7 +153,7 @@ func ParseHeader(addr net.Addr) ([]byte, int) {
 	copy(buf[1:], b1)
 	port_i, _ := strconv.Atoi(port)
 	binary.BigEndian.PutUint16(buf[1+iplen:], uint16(port_i))
-	return buf[:1+iplen+2], 1 + iplen + 2
+	return buf[:1+iplen+2]
 }
 
 func Pipeloop(ss *UDPConn, srcaddr *net.UDPAddr, remote UDP) {
@@ -165,7 +161,6 @@ func Pipeloop(ss *UDPConn, srcaddr *net.UDPAddr, remote UDP) {
 	defer pool.Put(buf)
 	defer nl.Delete(srcaddr.String())
 	for {
-		remote.SetReadDeadline(time.Now().Add(readTimeout))
 		n, raddr, err := remote.ReadFrom(buf)
 		if err != nil {
 			if ne, ok := err.(*net.OpError); ok && (ne.Err == syscall.EMFILE || ne.Err == syscall.ENFILE) {
@@ -180,12 +175,16 @@ func Pipeloop(ss *UDPConn, srcaddr *net.UDPAddr, remote UDP) {
 			return
 		}
 		// need improvement here
-		if N, ok := ReqList[raddr.String()]; ok {
-			go ss.WriteToUDP(append(N.Req[:N.ReqLen], buf[:n]...), srcaddr)
+		ReqListLock.RLock()
+		N, ok := ReqList[raddr.String()]
+		ReqListLock.RUnlock()
+		if ok {
+			ss.WriteToUDP(append(N.Req, buf[:n]...), srcaddr)
 		} else {
-			header, hlen := ParseHeader(raddr)
-			go ss.WriteToUDP(append(header[:hlen], buf[:n]...), srcaddr)
+			header := ParseHeader(raddr)
+			ss.WriteToUDP(append(header, buf[:n]...), srcaddr)
 		}
+		upTraffic(strconv.Itoa(ss.LocalAddr().(*net.UDPAddr).Port), n, srcaddr.IP.String())
 	}
 }
 
@@ -194,74 +193,73 @@ type ReqNode struct {
 	ReqLen int
 }
 
+var ReqListLock sync.RWMutex
 var ReqList = map[string]*ReqNode{}
 
-var nl = NATlist{Conns: map[string]*CachedUDPConn{}}
-
-func (c *UDPConn) handleUDPConnection(n int, src *net.UDPAddr, receive []byte) {
-	var dstIP net.IP
-	var reqLen int
-	defer pool.Put(receive)
-
-	switch receive[idType] {
-	case typeIPv4:
-		reqLen = lenIPv4
-		dstIP = net.IP(receive[idIP0 : idIP0+net.IPv4len])
-	case typeIPv6:
-		reqLen = lenIPv6
-		dstIP = net.IP(receive[idIP0 : idIP0+net.IPv6len])
-	case typeDm:
-		reqLen = int(receive[idDmLen]) + lenDmBase
-		dIP, err := net.ResolveIPAddr("ip", string(receive[idDm0:idDm0+receive[idDmLen]]))
+func HandleUDPConnection(c *UDPConn) {
+	buf := pool.Get().([]byte)
+	defer pool.Put(buf)
+	for {
+		n, src, err := c.ReadFromUDP(buf)
 		if err != nil {
-			fmt.Sprintf("[udp]failed to resolve domain name: %s\n", string(receive[idDm0:idDm0+receive[idDmLen]]))
 			return
 		}
-		dstIP = dIP.IP
-	default:
-		fmt.Sprintf("[udp]addr type %d not supported", receive[idType])
-		return
-	}
-	dst := &net.UDPAddr{
-		IP:   dstIP,
-		Port: int(binary.BigEndian.Uint16(receive[reqLen-2 : reqLen])),
-	}
-	if _, ok := ReqList[dst.String()]; !ok {
-		req := make([]byte, reqLen)
-		for i := 0; i < reqLen; i++ {
-			req[i] = receive[i]
-		}
-		ReqList[dst.String()] = &ReqNode{req, reqLen}
-	}
 
-	remote, _, err := nl.Get(src, c)
-	if err != nil {
-		return
-	}
-	remote.SetWriteDeadline(time.Now().Add(readTimeout))
-	_, err = remote.WriteToUDP(receive[reqLen:n], dst)
-	if err != nil {
-		if ne, ok := err.(*net.OpError); ok && (ne.Err == syscall.EMFILE || ne.Err == syscall.ENFILE) {
-			// log too many open file error
-			// EMFILE is process reaches open file limits, ENFILE is system limit
-			fmt.Println("[udp]write error:", err)
-		} else {
-			fmt.Println("[udp]error connecting to:", dst, err)
+		var dstIP net.IP
+		var reqLen int
+
+		switch buf[idType] {
+		case typeIPv4:
+			reqLen = lenIPv4
+			dstIP = net.IP(buf[idIP0 : idIP0+net.IPv4len])
+		case typeIPv6:
+			reqLen = lenIPv6
+			dstIP = net.IP(buf[idIP0 : idIP0+net.IPv6len])
+		case typeDm:
+			reqLen = int(buf[idDmLen]) + lenDmBase
+			dIP, err := net.ResolveIPAddr("ip", string(buf[idDm0:idDm0+buf[idDmLen]]))
+			if err != nil {
+				fmt.Sprintf("[udp]failed to resolve domain name: %s\n", string(buf[idDm0:idDm0+buf[idDmLen]]))
+				return
+			}
+			dstIP = dIP.IP
+		default:
+			fmt.Sprintf("[udp]addr type %d not supported", buf[idType])
+			return
 		}
-		return
-	}
-	// Pipeloop
-	return
+		dst := &net.UDPAddr{
+			IP:   dstIP,
+			Port: int(binary.BigEndian.Uint16(buf[reqLen-2 : reqLen])),
+		}
+		ReqListLock.Lock()
+		if _, ok := ReqList[dst.String()]; !ok {
+			req := make([]byte, reqLen)
+			copy(req, buf)
+			ReqList[dst.String()] = &ReqNode{req, reqLen}
+		}
+		ReqListLock.Unlock()
+
+		remote, _, err := nl.Get(src, c)
+		if err != nil {
+			return
+		}
+		_, err = remote.WriteToUDP(buf[reqLen:n], dst)
+		if err != nil {
+			if ne, ok := err.(*net.OpError); ok && (ne.Err == syscall.EMFILE || ne.Err == syscall.ENFILE) {
+				// log too many open file error
+				// EMFILE is process reaches open file limits, ENFILE is system limit
+				fmt.Println("[udp]write error:", err)
+			} else {
+				fmt.Println("[udp]error connecting to:", dst, err)
+			}
+			return
+		}
+		upTraffic(strconv.Itoa(dst.Port), n, dstIP.String())
+		// Pipeloop
+	} // for
 }
 
-func (c *UDPConn) ReadAndHandleUDPReq() {
-	buf := pool.Get().([]byte)
-	n, src, err := c.ReadFromUDP(buf)
-	if err != nil {
-		return
-	}
-	go c.handleUDPConnection(n, src, buf)
-}
+var nl = NATlist{Conns: map[string]*CachedUDPConn{}}
 
 func RawAddr(addr string) (buf []byte, err error) {
 	host, portStr, err := net.SplitHostPort(addr)
@@ -311,11 +309,12 @@ func Dial(addr, server string, cipher *Cipher) (c *Conn, err error) {
 //n is the size of the payload
 func (c *UDPConn) ReadFromUDP(b []byte) (n int, src *net.UDPAddr, err error) {
 	buf := pool.Get().([]byte)
+	defer pool.Put(buf)
+
 	n, src, err = c.UDP.ReadFromUDP(buf)
 	if err != nil {
 		return
 	}
-	defer pool.Put(buf)
 
 	iv := buf[:c.info.ivLen]
 	if err = c.initDecrypt(iv); err != nil {
@@ -328,11 +327,12 @@ func (c *UDPConn) ReadFromUDP(b []byte) (n int, src *net.UDPAddr, err error) {
 
 func (c *UDPConn) Read(b []byte) (n int, err error) {
 	buf := pool.Get().([]byte)
-	n, err = c.UDP.Read(buf[0:])
+	defer pool.Put(buf)
+
+	n, err = c.UDP.Read(buf)
 	if err != nil {
 		return
 	}
-	defer pool.Put(buf)
 
 	iv := buf[:c.info.ivLen]
 	if err = c.initDecrypt(iv); err != nil {

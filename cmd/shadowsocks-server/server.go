@@ -154,7 +154,7 @@ func handleConnection(conn *ss.Conn, port string, pflag *uint32, openvpn string)
 			return
 		}
 	}
-	ss.Debug.Printf("piping %s<->%s", conn.RemoteAddr(), host)
+	ss.Debug.Printf("ping %s<->%s", conn.RemoteAddr(), host)
 	go ss.PipeThenClose(conn, remote, ss.SET_TIMEOUT, pflag, port, "out")
 	ss.PipeThenClose(remote, conn, ss.NO_TIMEOUT, pflag, port, "in")
 	closed = true
@@ -172,7 +172,6 @@ type UDPListener struct {
 	password string
 	openvpn  string
 	listener net.PacketConn
-	pflag    *uint32
 }
 
 type PasswdManager struct {
@@ -189,9 +188,9 @@ func (pm *PasswdManager) add(port string, password [2]string, listener net.Liste
 	ss.AddTraffic(port)
 }
 
-func (pm *PasswdManager) addUDP(port string, password [2]string, listener net.PacketConn, pflag *uint32) {
+func (pm *PasswdManager) addUDP(port string, password [2]string, listener net.PacketConn) {
 	pm.Lock()
-	pm.udpListener[port] = &UDPListener{password[0], password[1], listener, pflag}
+	pm.udpListener[port] = &UDPListener{password[0], password[1], listener}
 	pm.Unlock()
 }
 
@@ -337,13 +336,13 @@ func run(port string, password [2]string) {
 }
 
 func runUDP(port string, password [2]string) {
-	conn, err := net.ListenPacket(netUdp, ":"+port)
+	addr, _ := net.ResolveUDPAddr(netUdp, ":"+port)
+	conn, err := net.ListenUDP(netUdp, addr)
 	if err != nil {
 		log.Printf("error listening udp port %v: %v\n", port, err)
 		return
 	}
-	var flag uint32 = 0
-	passwdManager.addUDP(port, password, conn, &flag)
+	passwdManager.addUDP(port, password, conn)
 	log.Printf("server listening udp port %v ...\n", port)
 	defer conn.Close()
 	var cipher *ss.Cipher
@@ -352,10 +351,7 @@ func runUDP(port string, password [2]string) {
 		log.Printf("Error generating cipher for udp port: %s %v\n", port, err)
 		conn.Close()
 	}
-	UDPConn := ss.NewUDPConn(conn.(*net.UDPConn), cipher.Copy())
-	for {
-		UDPConn.ReadAndHandleUDPReq()
-	}
+	ss.HandleUDPConnection(ss.NewUDPConn(conn, cipher.Copy()))
 }
 
 func enoughOptions(config *ss.Config) bool {

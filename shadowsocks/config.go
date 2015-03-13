@@ -26,7 +26,7 @@ type Config struct {
 	Net        int         `json:"net"`
 
 	// following options are only used by server
-	PortPassword map[string][2]string `json:"port_password"`
+	PortPassword map[string][3]string `json:"port_password"`
 	Timeout      int                  `json:"timeout"`
 
 	// following options are only used by client

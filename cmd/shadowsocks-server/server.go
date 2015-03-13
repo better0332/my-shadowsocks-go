@@ -21,7 +21,7 @@ import (
 
 const dnsGoroutineNum = 64
 
-func getRequest(conn *ss.Conn) (host string, extra []byte, err error) {
+func getRequest(conn *ss.Conn) (host, port string, extra []byte, err error) {
 	const (
 		idType  = 0 // address type index
 		idIP0   = 1 // ip addres start index
@@ -83,8 +83,7 @@ func getRequest(conn *ss.Conn) (host string, extra []byte, err error) {
 		host = string(buf[idDm0 : idDm0+buf[idDmLen]])
 	}
 	// parse port
-	port := binary.BigEndian.Uint16(buf[reqLen-2 : reqLen])
-	host = net.JoinHostPort(host, strconv.Itoa(int(port)))
+	port = strconv.Itoa(int(binary.BigEndian.Uint16(buf[reqLen-2 : reqLen])))
 	return
 }
 
@@ -112,13 +111,13 @@ func handleConnection(conn *ss.Conn, port string, pflag *uint32, openvpn string)
 		}
 	}()
 
-	host, extra, err := getRequest(conn)
+	h, p, extra, err := getRequest(conn)
 	if err != nil {
 		log.Println("error getting request", conn.RemoteAddr(), conn.LocalAddr(), err)
 		return
 	}
+	host = h + ":" + p
 	ss.Debug.Println("connecting", host)
-	h, p, _ := net.SplitHostPort(host)
 	addr, err := net.ResolveIPAddr("ip", h)
 	if err != nil {
 		log.Println(err)
@@ -164,6 +163,7 @@ func handleConnection(conn *ss.Conn, port string, pflag *uint32, openvpn string)
 type PortListener struct {
 	password string
 	openvpn  string
+	udp      string
 	listener net.Listener
 	pflag    *uint32
 }
@@ -171,6 +171,7 @@ type PortListener struct {
 type UDPListener struct {
 	password string
 	openvpn  string
+	udp      string
 	listener *net.UDPConn
 }
 
@@ -180,17 +181,17 @@ type PasswdManager struct {
 	udpListener  map[string]*UDPListener
 }
 
-func (pm *PasswdManager) add(port string, password [2]string, listener net.Listener, pflag *uint32) {
+func (pm *PasswdManager) add(port string, password [3]string, listener net.Listener, pflag *uint32) {
 	pm.Lock()
-	pm.portListener[port] = &PortListener{password[0], password[1], listener, pflag}
+	pm.portListener[port] = &PortListener{password[0], password[1], password[2], listener, pflag}
 	pm.Unlock()
 
 	ss.AddTraffic(port)
 }
 
-func (pm *PasswdManager) addUDP(port string, password [2]string, listener *net.UDPConn) {
+func (pm *PasswdManager) addUDP(port string, password [3]string, listener *net.UDPConn) {
 	pm.Lock()
-	pm.udpListener[port] = &UDPListener{password[0], password[1], listener}
+	pm.udpListener[port] = &UDPListener{password[0], password[1], password[2], listener}
 	pm.Unlock()
 
 	ss.AddTraffic(port)
@@ -239,27 +240,37 @@ func (pm *PasswdManager) del(port string) {
 // port. A different approach would be directly change the password used by
 // that port, but that requires **sharing** password between the port listener
 // and password manager.
-func (pm *PasswdManager) updatePortPasswd(port string, password [2]string) {
-	pl, ok := pm.get(port)
-	if !ok {
+func (pm *PasswdManager) updatePortPasswd(port string, password [3]string) {
+	if pl, ok := pm.get(port); !ok {
 		log.Printf("new port %s added\n", port)
 	} else {
-		if pl.password == password[0] && pl.openvpn == password[1] {
+		if pl.password != password[0] || pl.openvpn != password[1] {
+			log.Printf("closing port %s to update config", port)
+			pl.listener.Close()
+			if udp {
+				if pl, ok := pm.getUDP(port); ok {
+					log.Printf("[udp]closing port %s to update config", port)
+					pl.listener.Close()
+				}
+			}
+		} else if udp && pl.udp != password[2] {
+			if pl, ok := pm.getUDP(port); ok {
+				log.Printf("[udp]closing port %s to update config", port)
+				pl.listener.Close()
+			}
+		} else {
+			// nothing to change
 			return
 		}
-		log.Printf("closing port %s to update password\n", port)
-		pl.listener.Close()
 	}
 	// run will add the new port listener to passwdManager.
 	// So there maybe concurrent access to passwdManager and we need lock to protect it.
 	go run(port, password)
-	if udp {
-		pl, ok := pm.getUDP(port)
-		if ok {
-			pl.listener.Close()
-			go runUDP(port, password)
-		}
+
+	if udp && password[2] == "ok" {
+		go runUDP(port, password)
 	}
+
 }
 
 var passwdManager = PasswdManager{portListener: map[string]*PortListener{}, udpListener: map[string]*UDPListener{}}
@@ -306,7 +317,7 @@ func waitSignal() {
 	}
 }
 
-func run(port string, password [2]string) {
+func run(port string, password [3]string) {
 	ln, err := net.Listen(netTcp, ":"+port)
 	if err != nil {
 		log.Printf("error listening port %v: %v\n", port, err)
@@ -337,7 +348,7 @@ func run(port string, password [2]string) {
 	}
 }
 
-func runUDP(port string, password [2]string) {
+func runUDP(port string, password [3]string) {
 	addr, _ := net.ResolveUDPAddr(netUdp, ":"+port)
 	conn, err := net.ListenUDP(netUdp, addr)
 	if err != nil {
@@ -353,7 +364,7 @@ func runUDP(port string, password [2]string) {
 		log.Printf("Error generating cipher for udp port: %s %v\n", port, err)
 		conn.Close()
 	}
-	ss.HandleUDPConnection(ss.NewUDPConn(conn, cipher.Copy()))
+	ss.HandleUDPConnection(ss.NewUDPConn(conn, cipher.Copy()), password[1])
 }
 
 func enoughOptions(config *ss.Config) bool {
@@ -364,7 +375,7 @@ func unifyPortPassword(config *ss.Config) (err error) {
 	if len(config.PortPassword) == 0 { // this handles both nil PortPassword and empty one
 		if enoughOptions(config) {
 			port := strconv.Itoa(config.ServerPort)
-			config.PortPassword = map[string][2]string{port: [2]string{config.Password}}
+			config.PortPassword = map[string][3]string{port: [3]string{config.Password}}
 		}
 	} else {
 		if config.Password != "" || config.ServerPort != 0 {
@@ -443,7 +454,7 @@ func main() {
 	ss.NewTraffic()
 	for port, password := range config.PortPassword {
 		go run(port, password)
-		if udp {
+		if udp && password[2] == "ok" {
 			go runUDP(port, password)
 		}
 	}

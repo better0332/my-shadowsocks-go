@@ -4,8 +4,10 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
+	"log"
 	"net"
 	"strconv"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -196,7 +198,7 @@ type ReqNode struct {
 var ReqListLock sync.RWMutex
 var ReqList = map[string]*ReqNode{}
 
-func HandleUDPConnection(c *UDPConn) {
+func HandleUDPConnection(c *UDPConn, openvpn string) {
 	buf := pool.Get().([]byte)
 	defer pool.Put(buf)
 	for {
@@ -227,10 +229,14 @@ func HandleUDPConnection(c *UDPConn) {
 			fmt.Sprintf("[udp]addr type %d not supported", buf[idType])
 			return
 		}
-		dst := &net.UDPAddr{
-			IP:   dstIP,
-			Port: int(binary.BigEndian.Uint16(buf[reqLen-2 : reqLen])),
+		ip := dstIP.String()
+		p := strconv.Itoa(int(binary.BigEndian.Uint16(buf[reqLen-2 : reqLen])))
+		if (strings.HasPrefix(ip, "127.") && (p != "1194" || openvpn != "ok")) ||
+			strings.HasPrefix(ip, "10.8.") || ip == "::1" {
+			log.Printf("[udp]illegal connect to local network(%s)\n", ip)
+			return
 		}
+		dst, _ := net.ResolveUDPAddr("udp", net.JoinHostPort(ip, p))
 		ReqListLock.Lock()
 		if _, ok := ReqList[dst.String()]; !ok {
 			req := make([]byte, reqLen)
@@ -254,7 +260,7 @@ func HandleUDPConnection(c *UDPConn) {
 			}
 			return
 		}
-		upTraffic(strconv.Itoa(dst.Port), n, dstIP.String())
+		upTraffic(p, n, ip)
 		// Pipeloop
 	} // for
 }

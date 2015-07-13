@@ -1,8 +1,8 @@
-# shadowsocks-go
-
-forked from shadowsocks/shadowsocks-go(add full UDP support, chacha20, ipv4/ipv6/both) 
+# my-shadowsocks-go
 
 Current version: 1.1.3 [![Build Status](https://travis-ci.org/shadowsocks/shadowsocks-go.png?branch=master)](https://travis-ci.org/shadowsocks/shadowsocks-go)
+
+forked from shadowsocks/shadowsocks-go(add full UDP support, chacha20, ipv4/ipv6/both) 
 
 shadowsocks-go is a lightweight tunnel proxy which can help you get through firewalls. It is a port of [shadowsocks](https://github.com/clowwindy/shadowsocks).
 
